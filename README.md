@@ -40,7 +40,9 @@ Windows 10/11 x86_64 with WSL2 and PowerShell 5.1+. About 1.6 GB of download.
   symlink and hardlink kept; Windows `tar.exe` lost 2,006 files and 768 symlinks from it).
 - the full install runs on a real Windows machine in CI (`windows-install.yml`): download,
   checksum, `wsl --import`, start, `/etc/os-release`, bash, then `-Uninstall` leaves nothing.
-  GitHub's Windows runners cannot nest WSL2, so CI imports as WSL1; on your PC it is WSL2.
+  GitHub's Windows runners cannot nest WSL2, so CI imports as WSL1;
+- WSL2: the same awnix (`awnix (built on CentOS Stream 9)`, identical `/etc/os-release`) runs as
+  a WSL2 distro on the machine that hosts the whole AitherOS fleet, every day.
 
 The reboot-into-awnix path (bare metal) and Hyper-V are not in this version.
 
