@@ -1,0 +1,54 @@
+name: Windows install test
+
+# Runs the real WindowsGoodbye.ps1 on a real Windows machine against the latest release:
+# download, checksum, wsl --import, start, uninstall. GitHub's Windows runners cannot nest
+# WSL2, so the import runs as WSL1 (-WslVersion 1); everything else is the shipped path.
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["awnix WSL rootfs"]
+    types: [completed]
+
+jobs:
+  install:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable WSL (no distro)
+        shell: pwsh
+        run: |
+          wsl --install --no-distribution --web-download 2>&1 | Out-String | Write-Host
+          wsl --set-default-version 1 2>&1 | Out-String | Write-Host
+          wsl --status 2>&1 | Out-String | Write-Host
+
+      - name: Dry run
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./WindowsGoodbye.ps1 -DryRun
+
+      - name: Install (WSL1 import of the real release)
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./WindowsGoodbye.ps1 -NoLaunch -WslVersion 1 -DistroName awnix-ci
+
+      - name: It starts and is awnix
+        shell: pwsh
+        run: |
+          $os = wsl -d awnix-ci -- cat /etc/os-release | Out-String
+          $os -replace "`0", '' | Write-Host
+          if (($os -replace "`0", '') -notmatch 'ID=') { throw "awnix-ci did not report an OS" }
+          wsl -d awnix-ci -- sh -c 'test -x /usr/bin/bash && echo bash-ok'
+
+      - name: Uninstall leaves nothing behind
+        shell: pwsh
+        run: |
+          ./WindowsGoodbye.ps1 -Uninstall -DistroName awnix-ci
+          $left = (wsl --list --quiet | Out-String) -replace "`0", ''
+          if ($left -match 'awnix-ci') { throw "awnix-ci is still registered" }
+          Write-Host "removed cleanly"

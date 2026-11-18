@@ -32,7 +32,7 @@ Windows 10/11 x86_64 with WSL2 and PowerShell 5.1+. About 1.6 GB of download.
 
 ## Status
 
-**Private until tested.** Verified so far:
+**Early release.** Verified so far:
 - the script parses under Windows PowerShell 5.1 and PowerShell 7, and its checksum parser
   matches real `sha256sum` output;
 - the CI build boots the exported filesystem before publishing it;

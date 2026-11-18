@@ -30,6 +30,9 @@
 .PARAMETER Uninstall
     Unregister the distro (deletes its disk) and stop.
 
+.PARAMETER WslVersion
+    2 (default). 1 exists for CI: GitHub's Windows runners cannot nest WSL2.
+
 .PARAMETER DryRun
     Check everything and print the plan; download and import nothing.
 
@@ -47,7 +50,8 @@ param(
     [string]$Repo = 'Aitherium/windowsgoodbye',
     [switch]$Uninstall,
     [switch]$DryRun,
-    [switch]$NoLaunch
+    [switch]$NoLaunch,
+    [ValidateSet('1','2')][string]$WslVersion = '2'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -101,7 +105,10 @@ if (Test-DistroExists $DistroName) {
 # Built once on Linux by this repo's rootfs workflow (docker export, then booted and checked
 # before release). Split under GitHub's 2 GiB asset cap; every part is checked against
 # SHA256SUMS before anything is imported. No Python and no layer handling on this PC.
-$rel = Invoke-RestMethod -Headers @{ 'User-Agent' = 'windowsgoodbye' } "https://api.github.com/repos/$Repo/releases/latest"
+# A private repo (before the public release) needs a token; GITHUB_TOKEN is used when set.
+$gh = @{ 'User-Agent' = 'windowsgoodbye' }
+if ($env:GITHUB_TOKEN) { $gh['Authorization'] = "Bearer $($env:GITHUB_TOKEN)" }
+$rel = Invoke-RestMethod -Headers $gh "https://api.github.com/repos/$Repo/releases/latest"
 $parts = @($rel.assets | Where-Object { $_.name -like 'awnix-rootfs.tar.gz.part*' } | Sort-Object name)
 $sums = $rel.assets | Where-Object { $_.name -eq 'SHA256SUMS' } | Select-Object -First 1
 if (-not $parts.Count -or -not $sums) { Fail "The release $($rel.tag_name) has no awnix filesystem yet." }
@@ -118,7 +125,15 @@ $work = Join-Path $env:TEMP ("windowsgoodbye-" + [guid]::NewGuid().ToString('N')
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 try {
     $want = @{}
-    foreach ($line in ((Invoke-WebRequest -UseBasicParsing $sums.browser_download_url).Content -split "`r?`n")) {
+    function Get-Asset($a, $out) {
+        if ($env:GITHUB_TOKEN) {
+            $hh = @{ 'User-Agent' = 'windowsgoodbye'; Authorization = "Bearer $($env:GITHUB_TOKEN)"; Accept = 'application/octet-stream' }
+            Invoke-WebRequest -UseBasicParsing -Headers $hh -Uri $a.url -OutFile $out
+        } else { Invoke-WebRequest -UseBasicParsing -Uri $a.browser_download_url -OutFile $out }
+    }
+    $sumsFile = Join-Path $work 'SHA256SUMS'
+    Get-Asset $sums $sumsFile
+    foreach ($line in ((Get-Content -Raw $sumsFile) -split "`r?`n")) {
         if ($line -match '^([0-9a-f]{64})\s+\*?(\S+)$') { $want[$Matches[2]] = $Matches[1] }
     }
     $rootTar = Join-Path $work 'awnix-rootfs.tar.gz'
@@ -129,7 +144,7 @@ try {
             $i++
             $f = Join-Path $work $p.name
             Say ("Part {0}/{1} ({2:N0} MB)..." -f $i, $parts.Count, ($p.size / 1MB))
-            Invoke-WebRequest -UseBasicParsing -Uri $p.browser_download_url -OutFile $f
+            Get-Asset $p $f
             $got = (Get-FileHash -Algorithm SHA256 -Path $f).Hash.ToLower()
             if (-not $want.ContainsKey($p.name) -or $want[$p.name] -ne $got) {
                 Fail "$($p.name) failed its checksum. Nothing was installed."
@@ -143,7 +158,7 @@ try {
     # ── 4. Import + open ─────────────────────────────────────────────────────
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Say "Importing into WSL2 as '$DistroName' ($InstallDir)..."
-    $r = Invoke-Wsl @('--import', $DistroName, $InstallDir, $rootTar, '--version', '2')
+    $r = Invoke-Wsl @('--import', $DistroName, $InstallDir, $rootTar, '--version', $WslVersion)
     if ($r.Code -ne 0) { Fail "wsl --import failed: $($r.Text.Trim())" }
     $probe = Invoke-Wsl @('-d', $DistroName, '--', 'cat', '/etc/os-release')
     if ($probe.Code -ne 0) { Fail "Imported, but it does not start: $($probe.Text.Trim()). Remove it with -Uninstall." }
