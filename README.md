@@ -38,7 +38,6 @@ Windows 10/11 x86_64 with WSL2 and PowerShell 5.1+. About 1.6 GB of download.
 - the CI build boots the exported filesystem before publishing it;
 - `tools/merge_layers.py`: 5 offline tests plus a real merge of the awnix base layer (every
   symlink and hardlink kept; Windows `tar.exe` lost 2,006 files and 768 symlinks from it).
-
 - the full install runs on a real Windows machine in CI (`windows-install.yml`): download,
   checksum, `wsl --import`, start, `/etc/os-release`, bash, then `-Uninstall` leaves nothing.
   GitHub's Windows runners cannot nest WSL2, so CI imports as WSL1; on your PC it is WSL2.
