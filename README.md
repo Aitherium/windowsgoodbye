@@ -11,11 +11,15 @@ powershell -ExecutionPolicy Bypass -File .\WindowsGoodbye.ps1           # instal
 ## What it does
 
 1. Checks WSL2 is ready. If WSL is missing, it prints the one admin command to install it and stops.
-2. Pulls the public awnix image (`ghcr.io/aitherium/awnix:latest`, linux/amd64) anonymously and
-   checks every layer against the sha256 digest in the image manifest.
-3. Merges the layers into one root filesystem **stream to stream** (`merge_layers.py`), applying
-   OCI whiteouts. It never unpacks onto NTFS, which cannot hold Linux symlinks, hardlinks or modes.
-4. `wsl --import awnix %LOCALAPPDATA%\awnix\wsl <rootfs.tar> --version 2`, checks it starts, and opens it.
+2. Downloads the prebuilt awnix filesystem from this repo's latest release and checks every part
+   against `SHA256SUMS`.
+3. `wsl --import awnix %LOCALAPPDATA%wnix\wsl <awnix-rootfs.tar.gz> --version 2`, checks it
+   starts, and opens it.
+
+The filesystem is built by `.github/workflows/rootfs.yml` on Linux: `docker export` of the public
+`ghcr.io/aitherium/awnix` image (the engine applies OCI layers and whiteouts), then the tarball is
+imported back and booted (`/etc/os-release`, bash, systemd) before the release is published.
+`tools/merge_layers.py` is a pure-Python fallback for building it without Docker.
 
 ## What it never does
 
@@ -24,20 +28,19 @@ No boot entries, no boot-order change, no reboot, no drivers, no admin prompt. `
 
 ## Needs
 
-Windows 10/11 x86_64 with WSL2, PowerShell 5.1+, and Python 3 (for the layer merge;
-`winget install -e --id Python.Python.3.12`). About 1.6 GB of download.
+Windows 10/11 x86_64 with WSL2 and PowerShell 5.1+. About 1.6 GB of download.
 
 ## Status
 
 **Private until tested.** Verified so far:
-- the script parses under Windows PowerShell 5.1 and PowerShell 7;
-- `-DryRun` against the live image: 89 layers, about 1.6 GB, plan printed, nothing changed;
-- `merge_layers.py`: 5 offline tests (newest wins, whiteouts, opaque dirs, symlinks/hardlinks,
-  root dotfiles) plus a real merge of the awnix base layer (768 symlinks and every hardlink kept;
-  Windows `tar.exe` lost 2,006 files and 768 symlinks from the same layer).
+- the script parses under Windows PowerShell 5.1 and PowerShell 7, and its checksum parser
+  matches real `sha256sum` output;
+- the CI build boots the exported filesystem before publishing it;
+- `tools/merge_layers.py`: 5 offline tests plus a real merge of the awnix base layer (every
+  symlink and hardlink kept; Windows `tar.exe` lost 2,006 files and 768 symlinks from it).
 
-**Not yet run:** a full `wsl --import` end to end. It has to run on a machine that is not hosting
-a live WSL fleet; starting a second distro there has taken the fleet down before.
+**Not yet run:** `wsl --import` on a real Windows PC. Not on the machine that hosts the AitherOS
+fleet: starting a second WSL distro there has taken the fleet down before.
 
 The reboot-into-awnix path (bare metal) and Hyper-V are not in this version.
 

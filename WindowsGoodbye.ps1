@@ -9,10 +9,10 @@
     What it does, in order, and nothing else:
       1. Checks WSL2 is available. If WSL is missing it tells you the one command to
          install it (that needs admin and may need a reboot) and stops.
-      2. Downloads the awnix container image from ghcr.io (public, anonymous pull) and
-         turns its layers into one root filesystem tarball. Each layer is verified
-         against the sha256 digest in the image manifest before it is used.
-      3. Imports that tarball with `wsl --import` into a folder you own.
+      2. Downloads the prebuilt awnix filesystem from this repo's latest release and
+         checks every part against SHA256SUMS. It was built from the public awnix image
+         on Linux and booted in CI before it was published.
+      3. Imports it with `wsl --import` into a folder you own.
       4. Opens a shell in it.
 
     What it never does: touch boot entries, change Windows boot order, reboot,
@@ -24,8 +24,8 @@
 .PARAMETER InstallDir
     Where the distro's virtual disk lives. Default: %LOCALAPPDATA%\awnix\wsl.
 
-.PARAMETER Image
-    The image to import. Default: ghcr.io/aitherium/awnix:latest.
+.PARAMETER Repo
+    The GitHub repo whose latest release carries the awnix filesystem. Default: Aitherium/windowsgoodbye.
 
 .PARAMETER Uninstall
     Unregister the distro (deletes its disk) and stop.
@@ -44,7 +44,7 @@
 param(
     [string]$DistroName = 'awnix',
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'awnix\wsl'),
-    [string]$Image = 'ghcr.io/aitherium/awnix:latest',
+    [string]$Repo = 'Aitherium/windowsgoodbye',
     [switch]$Uninstall,
     [switch]$DryRun,
     [switch]$NoLaunch
@@ -97,67 +97,48 @@ if (Test-DistroExists $DistroName) {
     exit 0
 }
 
-# ── 2. Pull the image (anonymous, verified) ──────────────────────────────────
-if ($Image -notmatch '^ghcr\.io/([^:]+):(.+)$') { Fail "Image must look like ghcr.io/<owner>/<name>:<tag>, got: $Image" }
-$repo = $Matches[1]; $tag = $Matches[2]
-$reg = 'https://ghcr.io'
-$accept = 'application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
-
-Say "Asking ghcr.io for $repo`:$tag ..."
-$token = (Invoke-RestMethod "$reg/token?scope=repository:${repo}:pull").token
-$h = @{ Authorization = "Bearer $token"; Accept = $accept }
-$top = Invoke-RestMethod -Headers $h "$reg/v2/$repo/manifests/$tag"
-
-# An index lists one manifest per platform: take linux/amd64.
-if ($top.PSObject.Properties.Name -contains 'manifests') {
-    $pick = $top.manifests | Where-Object { $_.platform.os -eq 'linux' -and $_.platform.architecture -eq 'amd64' } | Select-Object -First 1
-    if (-not $pick) { Fail "The image has no linux/amd64 build. This PC needs x86_64." }
-    $man = Invoke-RestMethod -Headers $h "$reg/v2/$repo/manifests/$($pick.digest)"
-} else { $man = $top }
-
-$layers = @($man.layers)
-if (-not $layers.Count) { Fail "The image manifest lists no layers." }
-$total = ($layers | Measure-Object -Property size -Sum).Sum
-Say ("{0} layers, {1:N0} MB to download." -f $layers.Count, ($total / 1MB))
+# ── 2. Download the prebuilt awnix filesystem (verified) ────────────────────
+# Built once on Linux by this repo's rootfs workflow (docker export, then booted and checked
+# before release). Split under GitHub's 2 GiB asset cap; every part is checked against
+# SHA256SUMS before anything is imported. No Python and no layer handling on this PC.
+$rel = Invoke-RestMethod -Headers @{ 'User-Agent' = 'windowsgoodbye' } "https://api.github.com/repos/$Repo/releases/latest"
+$parts = @($rel.assets | Where-Object { $_.name -like 'awnix-rootfs.tar.gz.part*' } | Sort-Object name)
+$sums = $rel.assets | Where-Object { $_.name -eq 'SHA256SUMS' } | Select-Object -First 1
+if (-not $parts.Count -or -not $sums) { Fail "The release $($rel.tag_name) has no awnix filesystem yet." }
+$total = ($parts | Measure-Object -Property size -Sum).Sum
+Say ("Release {0}: {1} part(s), {2:N0} MB to download." -f $rel.tag_name, $parts.Count, ($total / 1MB))
 
 if ($DryRun) {
-    Say "DRY RUN: would download $($layers.Count) layers, build a rootfs in $env:TEMP, and run:" 'Yellow'
-    Say "  wsl --import $DistroName `"$InstallDir`" <rootfs.tar> --version 2" 'Yellow'
+    Say "DRY RUN: would download $($parts.Count) part(s), check SHA256SUMS, and run:" 'Yellow'
+    Say "  wsl --import $DistroName `"$InstallDir`" <awnix-rootfs.tar.gz> --version 2" 'Yellow'
     exit 0
 }
 
 $work = Join-Path $env:TEMP ("windowsgoodbye-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 try {
-    $i = 0
-    $files = @()
-    foreach ($l in $layers) {
-        $i++
-        $f = Join-Path $work ("layer{0:D3}.tar.gz" -f $i)
-        Say ("Layer {0}/{1} ({2:N0} MB)..." -f $i, $layers.Count, ($l.size / 1MB))
-        Invoke-WebRequest -UseBasicParsing -Headers @{ Authorization = "Bearer $token" } -Uri "$reg/v2/$repo/blobs/$($l.digest)" -OutFile $f
-        $want = ($l.digest -replace '^sha256:', '').ToLower()
-        $got = (Get-FileHash -Algorithm SHA256 -Path $f).Hash.ToLower()
-        if ($got -ne $want) { Fail "Layer $i failed its checksum (wanted $want, got $got). Nothing was installed." }
-        $files += $f
+    $want = @{}
+    foreach ($line in ((Invoke-WebRequest -UseBasicParsing $sums.browser_download_url).Content -split "`r?`n")) {
+        if ($line -match '^([0-9a-f]{64})\s+\*?(\S+)$') { $want[$Matches[2]] = $Matches[1] }
     }
-
-    # ── 3. Layers -> one rootfs tar, stream to stream ───────────────────────
-    # Never unpacked onto NTFS: it cannot hold Linux symlinks, hardlinks or modes
-    # (measured: Windows tar lost 2,006 files and 768 symlinks from awnix's base layer).
-    # merge_layers.py ships beside this script and needs only Python's standard library.
-    $merger = Join-Path $PSScriptRoot 'merge_layers.py'
-    if (-not (Test-Path $merger)) { Fail "merge_layers.py is missing next to this script." }
-    $py = Get-Command py.exe -ErrorAction SilentlyContinue
-    $pyArgs = @()
-    if ($py) { $pyArgs = @('-3') } else { $py = Get-Command python.exe -ErrorAction SilentlyContinue }
-    if (-not $py -or $py.Source -like '*WindowsApps*') {
-        Fail "Python 3 is needed to build the awnix filesystem. Install it with:`n    winget install -e --id Python.Python.3.12`nthen run Windows Goodbye again."
-    }
-    $rootTar = Join-Path $work 'awnix-rootfs.tar'
-    Say "Merging $($files.Count) layers into one filesystem..."
-    & $py.Source @pyArgs $merger $rootTar @files
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $rootTar)) { Fail "Could not build the root filesystem." }
+    $rootTar = Join-Path $work 'awnix-rootfs.tar.gz'
+    $outStream = [IO.File]::Create($rootTar)
+    try {
+        $i = 0
+        foreach ($p in $parts) {
+            $i++
+            $f = Join-Path $work $p.name
+            Say ("Part {0}/{1} ({2:N0} MB)..." -f $i, $parts.Count, ($p.size / 1MB))
+            Invoke-WebRequest -UseBasicParsing -Uri $p.browser_download_url -OutFile $f
+            $got = (Get-FileHash -Algorithm SHA256 -Path $f).Hash.ToLower()
+            if (-not $want.ContainsKey($p.name) -or $want[$p.name] -ne $got) {
+                Fail "$($p.name) failed its checksum. Nothing was installed."
+            }
+            $in = [IO.File]::OpenRead($f)
+            try { $in.CopyTo($outStream) } finally { $in.Dispose() }
+            Remove-Item -LiteralPath $f -Force
+        }
+    } finally { $outStream.Dispose() }
 
     # ── 4. Import + open ─────────────────────────────────────────────────────
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
