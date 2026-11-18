@@ -63,5 +63,5 @@ jobs:
         run: |
           TAG="rootfs-$(date -u +%Y%m%d-%H%M)"
           printf 'awnix WSL rootfs from %s\n\nBuilt by docker export; booted and checked (/etc/os-release, bash, systemd) before publishing.\n' "$DIGEST" > notes.md
-          gh release create "$TAG" --title "$TAG" --notes-file notes.md --latest \
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "$TAG" --notes-file notes.md --latest \
             awnix-rootfs.tar.gz.part* SHA256SUMS os-release.txt
